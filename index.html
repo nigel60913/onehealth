@@ -329,6 +329,7 @@ svg{display:block}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
 <main class="app" id="app">
@@ -696,6 +697,8 @@ const W = {};
   nodes.forEach(n => { n.up = down(n.id); n.catch = n.up.flatMap(id => nodes[id].cells); n.pop = sum(n.catch.map(k => cells[k].pop)); });
   const sizes = [300, 400, 500, 600, 800, 1000, 1200, 1500, 1800, 2000, 2400];
   nodes.forEach(n => { const raw = 300 + 2.3 * Math.sqrt(n.pop); n.D = sizes.find(s => s >= raw) || 2400; n.depth = +(1.4 + 7 * Math.sqrt(n.pop / W.totalPop) + rr(-.3, .6)).toFixed(1); n.flow = Math.round(n.pop * 0.3); });
+  [...nodes].sort((a, b) => a.pop - b.pop).forEach(n => { if (n.parent >= 0) { const p = nodes[n.parent]; p.depth = +Math.max(p.depth, n.depth + 0.15).toFixed(2); } });
+  nodes.forEach(n => n.depth = +Math.min(n.depth, 12).toFixed(1));
   W.nodes = nodes;
   const pipeF = nodes.map(n => { const to = n.parent === PLANT ? [W.plant.u, W.plant.v] : [nodes[n.parent].u, nodes[n.parent].v]; return feat(LS([[n.u, n.v], to]), { D: n.D, pop: n.pop, id: n.id, trunk: n.D >= 1000 ? 1 : 0 }); });
   base.pipes = fc(pipeF);
@@ -1088,6 +1091,7 @@ function onMapLoad() {
 
   add({ id: "bld", type: "fill-extrusion", source: "blds", paint: { "fill-extrusion-color": pal.bld, "fill-extrusion-height": ["get", "h"], "fill-extrusion-base": 0, "fill-extrusion-opacity": .88 } });
   add({ id: "field-bld", type: "fill-extrusion", source: "fieldUnits", paint: { "fill-extrusion-color": ["get", "col"], "fill-extrusion-height": ["get", "top"], "fill-extrusion-base": ["get", "base"], "fill-extrusion-opacity": .95 } });
+  if (Pipe3D.ok) { try { map.addLayer(Pipe3D.layer()); } catch (err) { Pipe3D.ok = false; console.warn(err); } }
   add({ id: "uav-area", type: "line", source: "fieldArea", layout: { visibility: "none" }, paint: { "line-color": "#ec7a12", "line-width": 2, "line-dasharray": [2, 1] } });
   add({ id: "uav-ring", type: "line", source: "ring", layout: { visibility: "none" }, paint: { "line-color": "#c62f24", "line-width": 2 } });
   add({ id: "uav-flight", type: "line", source: "flight", layout: { visibility: "none" }, paint: { "line-color": "#7a4fb8", "line-width": 1.6 } });
@@ -1129,6 +1133,7 @@ function buildRegistry() {
   reg("zones", "行政區界（示意）", "線", ["zone-line"]);
   reg("zlabels", "行政區名稱", "註記", [], { mk: "zlabels" });
   reg("ww-pipe", "衛生下水道管網（示意）", "線", ["ww-pipe", "ww-flow", "plant"], { mk: "plant" });
+  reg("ww-pipe3d", "三維管線（地下透視）", "3D", Pipe3D.ok ? ["ww-pipe3d"] : []);
   reg("ww-pop", "人口密度格網", "面", ["ww-pop"]);
   reg("ww-cases", "登革熱病例（近 4 週）", "點", ["cases"]);
   reg("ww-cand", "候選採樣點", "點", [], { mk: "cand" });
@@ -1183,6 +1188,9 @@ function applyVisibility() {
   // 3D/2D variants
   if (ids.get("vec-risk")) { ids.set("vec-risk", !S.is3D); ids.set("vec-risk3d", S.is3D); }
   ids.forEach((v, id) => { if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", v ? "visible" : "none"); });
+  Pipe3D.on = Pipe3D.ok && on.has("ww-pipe3d");
+  map.setPaintProperty("bld", "fill-extrusion-opacity", Pipe3D.on ? 0.18 : 0.88); map.setPaintProperty("field-bld", "fill-extrusion-opacity", Pipe3D.on ? 0.25 : 0.95);
+  map.setPaintProperty("ww-pipe", "line-opacity", Pipe3D.on ? 0.35 : 0.9); if (Pipe3D.on) map.triggerRepaint();
   Object.values(L).forEach(l => { if (l.mk) setMkVisible(l.mk, on.has(l.key), l.mk === "cand" ? null : l.mk === "sta" ? i => App.stationIdx().has(i) : null); });
   Object.entries(S.opacity).forEach(([k, o]) => setOpacity(k, o));
   void mod;
@@ -1256,7 +1264,7 @@ function refreshField() {
   const bf = S.uav.breedFilter;
   setData("breed", fc(D.breed.filter(b => bf === "all" || b.type === bf).map(b => feat(P(b.u, b.v), { id: b.id, state: b.state, type: b.type }))));
 }
-function refreshAll() { if (!map || !map.getSource("grid")) return; refreshGrid(); refreshCases(); refreshDevs(); refreshTasks(); refreshHC(); refreshField(); }
+function refreshAll() { if (!map || !map.getSource("grid")) return; Pipe3D.rebuild(); refreshGrid(); refreshCases(); refreshDevs(); refreshTasks(); refreshHC(); refreshField(); }
 
 /* flow animation */
 const DASH = [[0, 4, 3], [0.5, 4, 2.5], [1, 4, 2], [1.5, 4, 1.5], [2, 4, 1], [2.5, 4, 0.5], [3, 4, 0], [0, 0.5, 3, 3.5], [0, 1, 3, 3], [0, 1.5, 3, 2.5], [0, 2, 3, 2], [0, 2.5, 3, 1.5], [0, 3, 3, 1], [0, 3.5, 3, 0.5]];
@@ -1287,6 +1295,84 @@ function bindMapEvents() {
   });
   map.on("dblclick", e => { if (S.tool === "area" || S.tool === "dist") { e.preventDefault(); Tools.finish(); } });
   map.on("rotate", () => { $("#compassIcon").style.transform = `rotate(${-map.getBearing()}deg)`; });
+}
+
+/* ===================== 3D sewer pipes (x-ray underground view) ===================== */
+const Pipe3D = { on: false, ex: 15, rx: 10, key: "", ok: typeof THREE !== "undefined" };
+Pipe3D.pathToPlant = n => { const out = [n]; let c = n; while (c.parent >= 0) { c = W.nodes[c.parent]; out.push(c); } return out; };
+Pipe3D.layer = () => {
+  const o = maplibregl.MercatorCoordinate.fromLngLat(ll(6000, 6000), 0), s = o.meterInMercatorCoordinateUnits();
+  Pipe3D.loc = (u, v, z) => { const m = maplibregl.MercatorCoordinate.fromLngLat(ll(u, v), 0); return new THREE.Vector3((m.x - o.x) / s, -(m.y - o.y) / s, z); };
+  return {
+    id: "ww-pipe3d", type: "custom", renderingMode: "3d",
+    onAdd(m, gl) {
+      this.camera = new THREE.Camera(); this.scene = new THREE.Scene();
+      this.scene.add(new THREE.AmbientLight(0xffffff, 0.62));
+      const d1 = new THREE.DirectionalLight(0xffffff, 0.55); d1.position.set(0.4, -0.8, 1).normalize(); this.scene.add(d1);
+      const d2 = new THREE.DirectionalLight(0xffffff, 0.25); d2.position.set(-0.6, 0.5, -0.3).normalize(); this.scene.add(d2);
+      this.renderer = new THREE.WebGLRenderer({ canvas: m.getCanvas(), context: gl, antialias: true });
+      this.renderer.autoClear = false; Pipe3D.scene = this.scene; Pipe3D.rebuild(true);
+    },
+    render(gl, matrix) {
+      if (!Pipe3D.on) return;
+      const mm = new THREE.Matrix4().fromArray(matrix), l = new THREE.Matrix4().makeTranslation(o.x, o.y, o.z).scale(new THREE.Vector3(s, -s, s));
+      this.camera.projectionMatrix = mm.multiply(l);
+      this.renderer.resetState(); this.renderer.clearDepth(); this.renderer.render(this.scene, this.camera);
+    },
+  };
+};
+Pipe3D.rebuild = force => {
+  if (!Pipe3D.scene) return;
+  const sel = S.ww.sel, key = [Pipe3D.ex, Pipe3D.rx, sel ? sel.id : -1].join("|");
+  if (!force && key === Pipe3D.key) return; Pipe3D.key = key;
+  (Pipe3D.meshes || []).forEach(m => { Pipe3D.scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
+  const ex = Pipe3D.ex, rx = Pipe3D.rx, nodes = W.nodes;
+  const path = new Set(sel ? Pipe3D.pathToPlant(sel).map(n => n.id) : []), up = new Set(sel ? sel.up : []);
+  const stations = new Set(A.wwPlan().sel.map(x => x.n.id));
+  const Y = new THREE.Vector3(0, 1, 0), tmp = new THREE.Object3D();
+  const col = n => path.has(n.id) ? 0xec7a12 : up.has(n.id) ? 0x1f9a8a : n.D >= 1000 ? 0x2a62a8 : 0x7fb1dd;
+  // pipes
+  const geo = new THREE.CylinderGeometry(1, 1, 1, 12, 1, false);
+  const mat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
+  const pipes = new THREE.InstancedMesh(geo, mat, nodes.length);
+  nodes.forEach((n, i) => {
+    const p = n.parent >= 0 ? nodes[n.parent] : null, r = n.D / 2000 * rx;
+    const a = Pipe3D.loc(n.u, n.v, -(n.depth * ex) + r), b = p ? Pipe3D.loc(p.u, p.v, -(p.depth * ex) + r) : Pipe3D.loc(W.plant.u, W.plant.v, -(n.depth * ex) + r);
+    const d = new THREE.Vector3().subVectors(b, a), L = d.length() || 1;
+    tmp.position.copy(a).addScaledVector(d, 0.5); tmp.quaternion.setFromUnitVectors(Y, d.normalize()); tmp.scale.set(r, L, r); tmp.updateMatrix();
+    pipes.setMatrixAt(i, tmp.matrix); pipes.setColorAt(i, new THREE.Color(col(n)));
+  });
+  // manholes (vertical shafts)
+  const mh = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 10), new THREE.MeshLambertMaterial({ side: THREE.DoubleSide, transparent: true, opacity: .85 }), nodes.length);
+  const Zq = new THREE.Quaternion().setFromUnitVectors(Y, new THREE.Vector3(0, 0, 1));
+  nodes.forEach((n, i) => {
+    const st = stations.has(n.id), h = n.depth * ex, r = (st ? 6 : 3) * Math.max(1, rx / 6);
+    tmp.position.copy(Pipe3D.loc(n.u, n.v, -h / 2)); tmp.quaternion.copy(Zq); tmp.scale.set(r, h, r); tmp.updateMatrix();
+    mh.setMatrixAt(i, tmp.matrix); mh.setColorAt(i, new THREE.Color(st ? 0xec7a12 : path.has(n.id) ? 0xf3b46b : 0x8a98a3));
+  });
+  // plant tank
+  const tank = new THREE.Mesh(new THREE.CylinderGeometry(60, 60, 14, 32), new THREE.MeshLambertMaterial({ color: 0x2f74b5, side: THREE.DoubleSide, transparent: true, opacity: .7 }));
+  tank.position.copy(Pipe3D.loc(W.plant.u, W.plant.v, -7 - 4 * ex)); tank.quaternion.copy(Zq);
+  [pipes, mh].forEach(m => { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; });
+  Pipe3D.meshes = [pipes, mh, tank]; Pipe3D.meshes.forEach(m => Pipe3D.scene.add(m));
+  if (map) map.triggerRepaint();
+};
+/* longitudinal profile from a station down to the plant */
+function profileSvg(n) {
+  const path = Pipe3D.pathToPlant(n); const pts = []; let x = 0;
+  path.forEach((p, i) => { if (i) x += Math.hypot(p.u - path[i - 1].u, p.v - path[i - 1].v); pts.push({ x, d: p.depth, D: p.D / 1000, id: p.id }); });
+  x += Math.hypot(W.plant.u - path[path.length - 1].u, W.plant.v - path[path.length - 1].v); const end = x;
+  const Wd = 300, H = 150, L = 34, R = 10, T = 14, B = 22, maxD = Math.ceil(Math.max(...pts.map(p => p.d + p.D)) + 1);
+  const X = v => L + v / end * (Wd - L - R), Yd = d => T + d / maxD * (H - T - B);
+  let s = `<svg viewBox="0 0 ${Wd} ${H}" role="img" aria-label="縱斷面圖">`;
+  for (let k = 0; k <= maxD; k += Math.max(1, Math.round(maxD / 4))) s += `<line x1="${L}" x2="${Wd - R}" y1="${Yd(k)}" y2="${Yd(k)}" stroke="var(--line2)"/><text x="${L - 4}" y="${Yd(k) + 3}" font-size="9" text-anchor="end" fill="var(--muted)">${k ? "−" + k : 0} m</text>`;
+  s += `<rect x="${L}" y="${T - 6}" width="${Wd - L - R}" height="6" fill="#c9b48a" opacity=".55"/><text x="${L + 2}" y="${T - 8}" font-size="9" fill="var(--muted)">地面</text>`;
+  let top = "", bot = ""; pts.forEach((p, i) => { top += `${i ? "L" : "M"}${X(p.x)},${Yd(p.d)}`; }); top += `L${X(end)},${Yd(pts[pts.length - 1].d)}`;
+  for (let i = pts.length - 1; i >= 0; i--) bot += `L${X(pts[i].x)},${Yd(pts[i].d + pts[i].D)}`;
+  s += `<path d="${top}L${X(end)},${Yd(pts[pts.length - 1].d + pts[pts.length - 1].D)}${bot}Z" fill="#ec7a12" opacity=".75"/>`;
+  pts.forEach((p, i) => { s += `<line x1="${X(p.x)}" x2="${X(p.x)}" y1="${T}" y2="${Yd(p.d)}" stroke="${i === 0 ? "#ec7a12" : "#8a98a3"}" stroke-width="${i === 0 ? 3 : 1.4}"/>`; });
+  s += `<text x="${X(0) + 4}" y="${H - 8}" font-size="9" fill="var(--ink)">${n.cid || "起點"}</text><text x="${X(end)}" y="${H - 8}" font-size="9" text-anchor="end" fill="var(--ink)">處理廠 ${fmt(end / 1000, 1)} km</text>`;
+  return { svg: s + "</svg>", len: end, n: pts.length, maxD: Math.max(...pts.map(p => p.d)), maxDia: Math.max(...pts.map(p => p.D)) };
 }
 
 /* ===================== Domains & modules ===================== */
@@ -1354,7 +1440,7 @@ const DOMAINS = [
 
 /* ------------------------------------------------ 01 WASTEWATER ------------------------------------------------ */
 { id: "ww", num: "01", name: "廢水防疫選址與監測管理", short: "廢水防疫", sub: "以空間證據選對採樣位置", pitch: "疊合下水道、疫情與人口，評估採樣點並分階段佈點，再比對檢測與病例的時間變化。", time: "week",
-  layerKeys: ["ww-pipe", "ww-pop", "ww-cases", "ww-cand", "ww-catch", "ww-sta", "ww-sig"],
+  layerKeys: ["ww-pipe3d", "ww-pipe", "ww-pop", "ww-cases", "ww-cand", "ww-catch", "ww-sta", "ww-sig"],
   metrics() {
     const plan = A.wwPlan(), w = Math.min(S.week, CUR);
     const lv = plan.sel.map(s => A.wwLevel(D.ww[s.n.id][w - 1])), hi = lv.filter(x => x >= 2).length, hiP = plan.sel.filter(s => A.wwLevel(D.ww[s.n.id][Math.max(0, w - 2)]) >= 2).length;
@@ -1406,6 +1492,19 @@ const DOMAINS = [
           + sec("本週各站", `第 ${w} 週`, `<table class="rank"><tbody>${plan.sel.map(s => { const c = D.ww[s.n.id][w - 1]; return `<tr data-go="wwSel:${s.n.cid}" class="${s.n === n ? "sel" : ""}"><td><b>${s.n.cid}</b></td><td class="n">${fmt(c)}</td><td>${A.wwLevelName[A.wwLevel(c)]}</td></tr>`; }).join("")}</tbody></table><p class="panel-copy" style="margin-top:6px;font-size:12px">拖動下方時間軸或按播放，可看各集水區訊號逐週變化與病例出現位置。</p>`);
       },
       method: () => method("領先時間：計算 log10（濃度）與 L 週後病例數的皮爾森相關係數，L = 0–3 週，取相關最高者。", [["分析期間", "W20 至本週"], ["空間單元", "採樣站上游集水範圍"]], null, "相關分析僅說明兩者時間上的關係，正式研究需另行考量檢測靈敏度、流量變化與通報延遲。") },
+    { name: "三維管網與剖面", layers: ["ww-pipe3d", "ww-pipe", "ww-sta"], threeD: true, title: "三維管網：管徑、埋深、坡度與流向",
+      view: () => { const plan = A.wwPlan(); if (!S.ww.sel || !plan.sel.some(s => s.n === S.ww.sel)) S.ww.sel = plan.sel[0]?.n; const n = S.ww.sel || W.nodes[0]; return V(n.u - 120, n.v - 420, 15.85, 70, -32); },
+      panel() {
+        const plan = A.wwPlan(); if (!S.ww.sel || !plan.sel.some(s => s.n === S.ww.sel)) S.ww.sel = plan.sel[0]?.n; const n = S.ww.sel;
+        if (!Pipe3D.ok) return sec("三維管網", "", `<p class="panel-copy">三維元件載入失敗，請確認網路連線後重新整理。</p>`);
+        const pf = profileSvg(n), up = n.up.length;
+        const allLen = sum(W.nodes.map(x => { const p = x.parent < 0 ? W.plant : W.nodes[x.parent]; return Math.hypot(p.u - x.u, p.v - x.v); })) / 1000;
+        return sec("檢視監測站", "地圖飛到該站", segs("wwSel", plan.sel.map(s => [s.n.cid, s.n.cid]), n.cid) + `<p class="panel-copy" style="font-size:12px;margin-top:6px">地上建物自動淡化，地下管線以透視方式呈現。右鍵拖曳可旋轉、傾斜視角。</p>`)
+          + sec(`${n.cid} 至處理廠縱斷面`, "埋深（m）", `<div class="chart">${pf.svg}</div>${tbl([["流經距離", `${fmt(pf.len / 1000, 2)} km · ${pf.n} 座人孔`], ["站點人孔深度", `${n.depth} m（Ø ${n.D} mm）`], ["最深人孔", `${fmt(pf.maxD, 1)} m`], ["上游集水管段", `${up} 段 · ${fmt(n.pop)} 人`]])}`)
+          + sec("顯示設定", "示意用誇大比例", slider("p3Ex", "深度誇大", Pipe3D.ex, 1, 20, 1, "×") + slider("p3Rx", "管徑誇大", Pipe3D.rx, 1, 12, 1, "×"))
+          + sec("全區管網", "示意", tbl([["管段", `${W.nodes.length} 段 · ${fmt(allLen, 1)} km`], ["主幹管 Ø ≥ 1000 mm", `${W.nodes.filter(x => x.D >= 1000).length} 段`], ["人孔深度", `${fmt(Math.min(...W.nodes.map(x => x.depth)), 1)}–${fmt(Math.max(...W.nodes.map(x => x.depth)), 1)} m`]]));
+      },
+      method: () => method("每段管線以上、下游人孔的平面位置與管底深度建立三維圓管；人孔以垂直圓柱表示，高度＝人孔深度。縱斷面沿流向由監測站追溯至處理廠。", [["管徑", "依管線屬性（本展示依上游人口推估）"], ["坡度", "下游人孔深度 ≥ 上游人孔（重力流）"], ["誇大比例", "為了在城市尺度看得見，深度與管徑可調整誇大倍數"]], [["正式資料", "公共設施管線資料庫（下水道）：管徑、管材、管底高程、人孔深度"], ["地形", "內政部數值地形模型（DEM），計算地面高程與覆土深度"]], "三維管網可直接協助評估採樣點的人孔深度、進入條件與施工可行性。") },
   ] },
 
 /* ------------------------------------------------ 02 VECTOR ------------------------------------------------ */
@@ -1598,7 +1697,7 @@ const App = {
     Play.stop();
     if (m.threeD) S.is3D = true; else if (opts.keep3D !== true && domId !== prevDom) S.is3D = false;
     UI.closeAttr();
-    App.render(); if (map && map.getSource("grid")) { refreshAll(); applyVisibility(); if (!opts.noFly) App.fly(m.view); }
+    App.render(); if (map && map.getSource("grid")) { refreshAll(); applyVisibility(); if (!opts.noFly) App.fly(typeof m.view === "function" ? m.view() : m.view); }
   },
   fly(v, dur = 1400) {
     if (!map) return; const pitch = S.is3D ? (v.p || 55) : 0, bearing = S.is3D ? (v.b || -25) : 0;
@@ -1606,7 +1705,7 @@ const App = {
   },
   render() { UI.nav(); UI.crumb(); UI.timebar(); UI.metrics(); UI.right(); UI.legend(); UI.hud(); $("#btn2d").classList.toggle("on", !S.is3D); $("#btn3d").classList.toggle("on", S.is3D); },
   update(panel = true) { if (map && map.getSource("grid")) { refreshAll(); applyVisibility(); } UI.metrics(); UI.legend(); UI.hud(); if (panel) UI.right(true); },
-  onMapReady() { const sp = $("#splash"); sp.style.opacity = 0; setTimeout(() => sp.remove(), 500); App.fly(App.module().view, 0); },
+  onMapReady() { const sp = $("#splash"); sp.style.opacity = 0; setTimeout(() => sp.remove(), 500); const v = App.module().view; App.fly(typeof v === "function" ? v() : v, 0); },
 };
 
 const UI = {};
@@ -1704,6 +1803,7 @@ UI.dataSpec = () => sec("展示版資料狀態", "", tbl([["底圖與界線", "�
 /* ---------- legend ---------- */
 const LEG = {
   "ww-pipe": () => `<h5>衛生下水道（示意）</h5><div class="lg-row"><span class="sw line" style="background:#2f74b5;height:2px"></span>支管</div><div class="lg-row"><span class="sw line" style="background:#2f74b5;height:5px"></span>主幹管 Ø ≥ 1000 mm</div>`,
+  "ww-pipe3d": () => `<h5>三維管線（地下透視）</h5>${[["#ec7a12", "監測站 → 處理廠流經路徑"], ["#1f9a8a", "監測站上游集水管線"], ["#2a62a8", "主幹管 Ø ≥ 1000 mm"], ["#7fb1dd", "支管"], ["#8a98a3", "人孔（高度＝埋深）"]].map(([c, t]) => `<div class="lg-row"><span class="sw" style="background:${c}"></span>${t}</div>`).join("")}<div class="lg-row" style="color:var(--muted)">深度 ×${Pipe3D.ex}、管徑 ×${Pipe3D.rx} 誇大</div>`,
   "ww-pop": () => `<h5>人口密度（人／km²）</h5><div class="ramp" style="background:${rampCss("purple")}"></div><div class="ramp-lbl"><span>0</span><span>2 萬</span><span>5.5 萬</span></div>`,
   "ww-cases": () => `<h5>登革熱病例（近 4 週）</h5><div class="lg-row"><span class="sw dot" style="background:#c62f24"></span>本土病例</div><div class="lg-row"><span class="sw dot" style="background:#fff;border:1.5px solid #c62f24"></span>境外移入</div>`,
   "ww-cand": () => `<h5>候選採樣點</h5><div class="lg-row"><span class="mk-badge" style="transform:scale(.7)">1</span>排名（數字）</div><div class="lg-row"><span class="mk-badge sel" style="transform:scale(.7)">1</span>第一階段選入</div>`,
@@ -1815,7 +1915,7 @@ UI.tipFor = f => { const p = f.properties, id = f.layer.id;
 const ACT = {
   goDom: a => App.go(a, 0), goMod: a => { const [d, m] = a.split("|"); App.go(d, +m); },
   biv: a => { const [x, y] = a.split("|"); S.home.x = x; S.home.y = y; App.update(); },
-  wwSel: a => { S.ww.sel = W.cand.find(n => n.cid === a); App.update(); },
+  wwSel: a => { S.ww.sel = W.cand.find(n => n.cid === a); App.update(); if (S.dom === "ww" && S.mod === 4) App.fly(App.module().view(), 1200); },
   thr: a => { S.vec.thr = a; App.update(); }, trig: () => { S.vec.trig = !S.vec.trig; App.update(); },
   toggleLayer: k => { if (["buildings", "zones", "zlabels"].includes(k)) { S.common.has(k) ? S.common.delete(k) : S.common.add(k); } else S.lay.has(k) ? S.lay.delete(k) : S.lay.add(k); applyVisibility(); UI.legend(); UI.right(true); },
   set3d: () => set3D(!S.is3D),
@@ -1837,6 +1937,7 @@ const INPUT = {
   wRep: v => S.ww.w.rep = v, wEpi: v => S.ww.w.epi = v, wPipe: v => S.ww.w.pipe = v, wBuild: v => S.ww.w.build = v, wwK: v => S.ww.k = v,
   vWd: v => S.vec.wd = v, vWp: v => S.vec.wp = v, vWe: v => S.vec.we = v,
   uAlt: v => S.uav.alt = v, uFront: v => S.uav.front = v, uSide: v => S.uav.side = v, clip: v => S.uav.clip = v,
+  p3Ex: v => Pipe3D.ex = v, p3Rx: v => Pipe3D.rx = v,
   bivX: v => S.home.x = v, bivY: v => S.home.y = v,
 };
 function runQuickMap() {
@@ -1892,6 +1993,7 @@ const TOUR = [
   { d: "ww", m: 0, t: "01 廢水防疫｜基礎圖資整合", x: "把下水道管網、人口密度與病例疊在一起。管線流向決定每個採樣點「採到誰的污水」，這是選址的基礎。" },
   { d: "ww", m: 1, t: "01 廢水防疫｜採樣點選址評估", x: "12 個候選點依人口代表性、疫情、管線與施工條件評分。右側權重可即時調整，並依站數分階段佈點，避免上下游重複採樣。", run: () => { S.ww.k = 4; } },
   { d: "ww", m: 3, t: "01 廢水防疫｜時空分析", x: "播放時間軸，看各集水區訊號逐週變化。右側比對廢水濃度與病例，示範資料中訊號約領先病例一週。", run: () => { S.week = 36; } },
+  { d: "ww", m: 4, t: "01 廢水防疫｜三維管網與剖面", x: "把地下管網以三維透視呈現：管徑、埋深與坡度一目了然。橘色是監測站到處理廠的流經路徑，右側同步畫出縱斷面圖，評估設站時可直接看人孔深度與施工條件。" },
   { d: "vec", m: 1, t: "02 病媒蚊｜智慧監測與人工複核", x: "智慧捕蚊燈的 AI 辨識事件先經人工確認或排除，再進入風險計算。這一步的判讀標準由國衛院專業團隊訂定。" },
   { d: "vec", m: 2, t: "02 病媒蚊｜病媒與病原風險圖", x: "密度、病原與病例、環境三項加權成綜合分數。3D 柱高代表分數；切換閾值或權重，全圖即時重算。", run: () => { S.is3D = true; } },
   { d: "vec", m: 3, t: "02 病媒蚊｜防治流程整合", x: "監測超標或出現病例時自動建立案件，經派案、執行、回報到結案都留紀錄。點選案件可以推進狀態。" },
